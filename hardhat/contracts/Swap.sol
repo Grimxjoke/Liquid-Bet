@@ -30,7 +30,7 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
   uint256 public homeScore;
   uint256 public awayScore;
 
-  uint256 public FinalResult = 0;
+  uint8 public FinalResult = 0;
   /* chainlink event */
   event RequestMultipleFulfilled(
     bytes32 indexed requestId,
@@ -45,12 +45,15 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
     string functionName
   );
 
+  event UserInformation(
+    address indexed userAddress,
+    uint256 amount_team1_wallet,
+    uint256 amount_team2_wallet
+  );
+
   /*
    *@notice: Constructor.
    *@dev: Implement the two tokens contracts address at deployment.
-   *_LinkToken = 0x326C977E6efc84E512bB9C30f76E30c160eD06FB     (on mumbai)
-   *_LinkOracle = 0x915dc8cbcf3F17faa33F20B88e6d5D162195E0b2    (own oracle)
-   *_JobId = fa38023e44a84b6384c9411401904997                   2 results home/away based on sportdataio
    */
   constructor(
     address _FranceTokenAddress,
@@ -61,7 +64,8 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
     jobId = "fa38023e44a84b6384c9411401904997";
     setChainlinkToken(_LinkToken);
     setChainlinkOracle(_LinkOracle);
-    fee = (1 * LINK_DIVISIBILITY) / 10; // 0,1 * 10**18 (Varies by network and job) (here 0.1 link as in testnets)
+    // 0,1 * 10**18 (Varies by network and job) (here 0.1 link as in testnets)
+    fee = (1 * LINK_DIVISIBILITY) / 10;
 
     FranceTokenAddress = _FranceTokenAddress;
     BrasilTokenAddress = _BrasilTokenAddress;
@@ -114,7 +118,11 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
     );
   }
 
-  /*end of chainlink functions*/
+  function withdrawMatic() public payable onlyOwner {
+    require(walletBalance() != 0, "There is no Matic in the Contract");
+    (bool sent, ) = payable(msg.sender).call{ value: walletBalance() }("");
+    require(sent, "Failure Coudn't send Matic");
+  }
 
   /*
    *@notice: Public function that shows the balance of France Tokens in the contract
@@ -132,6 +140,10 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
   function getReserveBrasil() public view returns (uint256) {
     uint256 BrasilReserve = ERC20(BrasilTokenAddress).balanceOf(address(this));
     return (BrasilReserve);
+  }
+
+  function contractBalance() public view returns (uint256) {
+    return address(this).balance;
   }
 
   /*
@@ -152,6 +164,10 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
     return (balanceBrasilToken);
   }
 
+  function walletBalance() public view returns (uint256) {
+    return (msg.sender.balance);
+  }
+
   function ownTokenContracts() public onlyOwner {
     France(FranceTokenAddress).setSmartContractOwner();
     Brasil(BrasilTokenAddress).setSmartContractOwner();
@@ -163,7 +179,7 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
    *@dev: Need to approve the Contract address from each Tokens Contract before calling the function.
    */
 
-  function addLiquidity(uint256 _amountTeamA, uint256 _amountTeamB)
+  function addLiquidity(uint128 _amountTeamA, uint128 _amountTeamB)
     public
     onlyOwner
   {
@@ -172,6 +188,7 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
       address(this),
       _amountTeamA
     );
+
     ERC20(BrasilTokenAddress).transferFrom(
       msg.sender,
       address(this),
@@ -194,14 +211,15 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
     France(FranceTokenAddress).mint(msg.sender, msg.value);
     Brasil(BrasilTokenAddress).mint(msg.sender, msg.value);
 
+    uint256 franceTokenReserve = getReserveFrance();
+    uint256 brasilTokenReserve = getReserveBrasil() - msg.value;
+
     ERC20(BrasilTokenAddress).transferFrom(
       msg.sender,
       address(this),
       msg.value
     );
 
-    uint256 franceTokenReserve = getReserveFrance();
-    uint256 brasilTokenReserve = getReserveBrasil() - msg.value;
     uint256 frReturn = (msg.value * franceTokenReserve) /
       (brasilTokenReserve + msg.value);
 
@@ -211,6 +229,10 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
 
   function deposit_swapFRtoBRA() public payable {
     require(msg.value > 0, "You didn't provide any funds");
+
+    uint256 franceTokenReserve = getReserveFrance() - msg.value;
+    uint256 brasilTokenReserve = getReserveBrasil();
+
     France(FranceTokenAddress).mint(msg.sender, msg.value);
     Brasil(BrasilTokenAddress).mint(msg.sender, msg.value);
 
@@ -220,21 +242,12 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
       msg.value
     );
 
-    uint256 franceTokenReserve = getReserveFrance() - msg.value;
-    uint256 brasilTokenReserve = getReserveBrasil();
     uint256 braReturn = (msg.value * brasilTokenReserve) /
       (franceTokenReserve + msg.value);
 
     ERC20(BrasilTokenAddress).transfer(msg.sender, braReturn);
+
     emit DepositMade(msg.sender, msg.value, braReturn, "deposit_swapFRtoBRA");
-  }
-
-  function walletBalance() public view returns (uint256) {
-    return (msg.sender.balance);
-  }
-
-  function contractBalance() public view returns (uint256) {
-    return address(this).balance;
   }
 
   /*
@@ -250,11 +263,6 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
     uint256 balanceBrasilToken = getBalanceWalletBrasil();
 
     if (FinalResult == 1) {
-      uint256 balanceFrance_before = balanceFranceToken;
-      require(
-        balanceFranceToken >= contractBalance(),
-        "There is not Enought Matic in the Contract"
-      );
       ERC20(FranceTokenAddress).transferFrom(
         msg.sender,
         address(this),
@@ -265,16 +273,9 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
         address(this),
         balanceBrasilToken
       );
-      (bool sent, ) = payable(msg.sender).call{ value: balanceFrance_before }(
-        ""
-      );
+      (bool sent, ) = payable(msg.sender).call{ value: balanceFranceToken }("");
       require(sent, "Failed to send Ether");
     } else if (FinalResult == 3) {
-      uint256 balanceBrasil_before = balanceBrasilToken;
-      require(
-        balanceBrasilToken >= contractBalance(),
-        "There is not Enought Matic in the Contract"
-      );
       ERC20(BrasilTokenAddress).transferFrom(
         msg.sender,
         address(this),
@@ -285,16 +286,12 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
         address(this),
         balanceFranceToken
       );
-      (bool sent, ) = payable(msg.sender).call{ value: balanceBrasil_before }(
-        ""
-      );
+      (bool sent, ) = payable(msg.sender).call{ value: balanceBrasilToken }("");
       require(sent, "Failed to send Ether");
     }
     // In case of a draw, EXPERIMENTAL
     else if (FinalResult == 2) {
-      uint256 balanceFrance_before = balanceFranceToken;
-      uint256 balanceBrasil_before = balanceBrasilToken;
-      uint256 total_before = balanceBrasil_before + balanceFrance_before;
+      uint256 total = balanceBrasilToken + balanceFranceToken;
       ERC20(FranceTokenAddress).transferFrom(
         msg.sender,
         address(this),
@@ -306,8 +303,12 @@ contract Swap is ERC20, Ownable, ChainlinkClient {
         balanceBrasilToken
       );
 
-      (bool sent, ) = payable(msg.sender).call{ value: (total_before / 2) }("");
+      (bool sent, ) = payable(msg.sender).call{ value: (total / 2) }("");
       require(sent, "Failed to send Ether");
     }
   }
+
+  receive() external payable {}
+
+  fallback() external payable {}
 }
